@@ -4,40 +4,13 @@
 #define		F_CPU	2000000UL
 #include <util/delay.h>
 
-// TODO: PWM buzzer + LED toggle (alarmOn), sleep, EEPROM (voltageLimit), SPI???
-// Done?: 4 ADC channels (checkCells), UART transmit, UART receive (setVoltageLimit)
+// TODO: PWM buzzer (alarmOn), sleep, SPI???
 
 volatile uint8_t rxdReady = 0;
-volatile uint16_t voltageLimit;
+//volatile uint16_t voltageLimit;
 uint8_t transferedBytesRxD = 0;
 
-//EEPROM not erased under chip erase
-//If the device is locked the EEPROM is always erased by a chip erase, regardless of this bit.
-//FUSE_SYSCFG0 = FUSE_EESAVE_bm;
-
-// Read voltage limit from EEPROM
 char setVoltageLimit[7] = "v:0000\n";
-
-EEPROM_START
-/*
-char* eepromAddr = EEPROM_START;
-voltageLimit 
-*/
-
-/*
-char* eepromAddr = EEPROM_START + 2;
-for (int i = 2; i < 6, i++) {
-	setVoltageLimit[i] = *eepromAddr;
-	eepromAddr ++;
-}
-*/
-
-/*
-EEPROM
-The EEPROM is divided into a set of pages where one page consists of multiple bytes. The EEPROM
-has byte granularity on erase write. Within one page, only the bytes marked to be updated will be erased/
-written. The byte is marked by writing a new value to the page buffer for that address location.
-*/
 
 uint16_t cell1;
 uint16_t cell2;
@@ -70,24 +43,6 @@ ISR(USART0_RXC_vect) {
 			} break;	
 		case 6:
 			transferedBytesRxD = 0;
-			if (setVoltageLimit[6] == '\n') {
-				voltageLimit = (setVoltageLimit[2]-'0')*1000 + (setVoltageLimit[3]-'0')*100 + (setVoltageLimit[4]-'0')*10 + (setVoltageLimit[5]-'0');
-				// Write voltage limit to EEPROM
-				// Start address of EEPROM - EEPROM_START - (0x1400-0x1480)
-				/*
-				while (!NVMCTRL_EEREADY_bm) {
-				}
-				char* eepromAddr = EEPROM_START;
-				*eepromAddr = voltageLimit;
-				/*while (setVoltageLimit != 0) {
-					*eepromAddr = *setVoltageLimit;
-					eepromAddr ++;
-					setVoltageLimit ++;
-				}*/
-				// Only needed to write/erase
-				CPU_CCP = CCP_SPM_gc; // Key SPM - SPM Instruction Protection
-				NVMCTRL_CTRLA = NVMCTRL_CMD_PAGEERASEWRITE_gc;
-				*/
 				rxdReady = 1;
 			} break;
 	}
@@ -192,18 +147,6 @@ void measureCells() {
 	UARTTransmit(allCells);
 }
 
-void checkVoltageLimit() {
-	while (cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit) {
-		//alarmOn();
-		
-		UARTTransmit(setVoltageLimit);
-		UARTTransmit("BATTERY LOW\n");
-		
-		PORTB_OUTTGL = PIN5_bm;
-		_delay_ms(100);
-	}
-	PORTB_OUTTGL = (0 << PIN5_bp);
-}
 
 void alarmOn() {
 	// PORTB_OUTTGL = PIN5_bm;
@@ -217,10 +160,63 @@ void sleepMode() {
 	SLPCTRL_CTRLA = SLEEP_MODE_STANDBY | SLPCTRL_SEN_bm;
 }
 
+void readVoltageFromEEPROM() {
+	cli();
+	for (int i = 0; i < 4; i++) {
+		setVoltageLimit[i + 2] = *(char*)(EEPROM_START + i);
+	}
+	sei();
+}
+
+void writeVoltageToEEPROM() {
+	cli();
+	while (NVMCTRL_STATUS & NVMCTRL_EEBUSY_bm);
+
+	// Only needed to write/erase	
+	CPU_CCP = CCP_SPM_gc;  // Key SPM - SPM Instruction Protection
+	NVMCTRL_CTRLA = NVMCTRL_CMD_PAGEBUFCLR_gc;
+	
+	// Write voltage limit to EEPROM
+	// Start address of EEPROM - EEPROM_START - (0x1400-0x1480)				
+	for (int i = 0; i < 4; i++) {
+		*(char*)(EEPROM_START + i) = setVoltageLimit[i + 2];
+	}
+	
+	CPU_CCP = CCP_SPM_gc;
+	NVMCTRL_CTRLA = NVMCTRL_CMD_PAGEERASEWRITE_gc;
+	
+	sei();
+}
+
+uint16_t getVoltageLimit() {
+	return (setVoltageLimit[2]-'0')*1000 + (setVoltageLimit[3]-'0')*100 + (setVoltageLimit[4]-'0')*10 + (setVoltageLimit[5]-'0');	
+}
+
+void checkVoltageLimit() {
+	writeVoltageToEEPROM();
+	uint16_t voltageLimit = getVoltageLimit();
+	while (cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit) {
+		voltageLimit = getVoltageLimit();
+		//alarmOn();
+		
+		//UARTTransmit(setVoltageLimit);
+		UARTTransmit("BATTERY LOW\n");
+		
+		PORTB_OUTTGL = PIN5_bm;
+		_delay_ms(100);
+	}
+	PORTB_OUTTGL = (0 << PIN5_bp);
+}
+
+
 int main(void) {
 	// Divide 20MHz Clock by 10 -> 2MHz Clock
 	CPU_CCP = CCP_IOREG_gc;
 	CLKCTRL_MCLKCTRLB = CLKCTRL_PEN_bm | CLKCTRL_PDIV_10X_gc;
+	
+	//EEPROM not erased under chip erase
+	//If the device is locked the EEPROM is always erased by a chip erase, regardless of this bit.
+	FUSE_SYSCFG0 = FUSE_EESAVE_bm;
 	
 	UARTInit();
 	ADCInit();
@@ -232,17 +228,20 @@ int main(void) {
 		_delay_ms(100);
 	}
 	
+	readVoltageFromEEPROM();
+	
 	sei();
 	
     while (1) {	
 		if (rxdReady == 1) {
-			UARTTransmit(setVoltageLimit);
+			//writeVoltageToEEPROM();
 			rxdReady = 0;
 		}
-		_delay_ms(1000);
-
+		_delay_ms(1500);
+		
 		measureCells();
 		checkVoltageLimit();
+		UARTTransmit(setVoltageLimit);	
 		
 		
 		// start ADC conversion STCONV
