@@ -17,36 +17,72 @@ uint16_t cell2;
 uint16_t cell3;
 uint16_t cell4;
 
+void writeVoltageToEEPROM() {
+	cli();
+	while (NVMCTRL_STATUS & NVMCTRL_EEBUSY_bm);
+
+	// Only needed to write/erase
+	CPU_CCP = CCP_SPM_gc;  // Key SPM - SPM Instruction Protection
+	NVMCTRL_CTRLA = NVMCTRL_CMD_PAGEBUFCLR_gc;
+	
+	// Write voltage limit to EEPROM
+	// Start address of EEPROM - EEPROM_START - (0x1400-0x1480)
+	for (int i = 0; i < 4; i++) {
+		*(char*)(EEPROM_START + i) = setVoltageLimit[i + 2];
+	}
+	
+	CPU_CCP = CCP_SPM_gc;
+	NVMCTRL_CTRLA = NVMCTRL_CMD_PAGEERASEWRITE_gc;
+	
+	sei();
+}
+
+void readVoltageFromEEPROM() {
+	cli();
+	for (int i = 0; i < 4; i++) {
+		setVoltageLimit[i + 2] = *(char*)(EEPROM_START + i);
+	}
+	sei();
+}
+
 ISR(USART0_RXC_vect) {	
 	// Read incoming data
-	setVoltageLimit[transferedBytesRxD] = USART0_RXDATAL;
+	char dataIn[7];
+	dataIn[transferedBytesRxD] = USART0_RXDATAL;	
 	
 	// Check if read data matches the template: "v:0000\n"
 	switch (transferedBytesRxD) {
 		case 0:
-			if (setVoltageLimit[0] != 'v') {
-				transferedBytesRxD = 0;
-			} else {
+			if (dataIn[0] == 'v') {
 				transferedBytesRxD ++;
+			} else {
+				transferedBytesRxD = 0;
 			} break;
 		case 1:
-			if (setVoltageLimit[1] != ':') {
-				transferedBytesRxD = 0;
-			} else {
+			if (dataIn[1] == ':') {
 				transferedBytesRxD ++;
+			} else {
+				transferedBytesRxD = 0;
 			} break;
 		case 2: case 3: case 4: case 5:
-			if (setVoltageLimit[transferedBytesRxD] == '\n' || setVoltageLimit[transferedBytesRxD] < '0' || setVoltageLimit[transferedBytesRxD] > '9') {
-				transferedBytesRxD = 0;
-			} else {
+			if ('0' <= dataIn[transferedBytesRxD] && dataIn[transferedBytesRxD] <= '9') {
 				transferedBytesRxD ++;
+			} else {
+				transferedBytesRxD = 0;
 			} break;	
 		case 6:
+			if (dataIn[6] == '\n') {
+				for (int i = 0; i < 7; i++)	{
+					setVoltageLimit[i] = dataIn[i];
+				}
+				writeVoltageToEEPROM();	
+				//rxdReady = 1;
+			} 
 			transferedBytesRxD = 0;
-				rxdReady = 1;
-			} break;
+			break;	
 	}
 }
+
 
 void UARTInit() {
 	// Set PINA1 (TxD) as output and high, PINA2 (RxD) as input and high.
@@ -137,7 +173,7 @@ void measureCells() {
 	adcRead = ADC0_RES;	
 	cell4 = (adcRead * vRef) / 1024;	
 	
-	char allCells[43] = "{c1: xxxx, c2: xxxx, c3: xxxx, c4: xxxx}\n";
+	char allCells[42] = "{c1: xxxx, c2: xxxx, c3: xxxx, c4: xxxx}\n";
 	// Send voltage in millivolts
 	concatenateString(allCells, voltageToString(cell1), 5);
 	concatenateString(allCells, voltageToString(cell2), 15);
@@ -160,47 +196,19 @@ void sleepMode() {
 	SLPCTRL_CTRLA = SLEEP_MODE_STANDBY | SLPCTRL_SEN_bm;
 }
 
-void readVoltageFromEEPROM() {
-	cli();
-	for (int i = 0; i < 4; i++) {
-		setVoltageLimit[i + 2] = *(char*)(EEPROM_START + i);
-	}
-	sei();
-}
-
-void writeVoltageToEEPROM() {
-	cli();
-	while (NVMCTRL_STATUS & NVMCTRL_EEBUSY_bm);
-
-	// Only needed to write/erase	
-	CPU_CCP = CCP_SPM_gc;  // Key SPM - SPM Instruction Protection
-	NVMCTRL_CTRLA = NVMCTRL_CMD_PAGEBUFCLR_gc;
-	
-	// Write voltage limit to EEPROM
-	// Start address of EEPROM - EEPROM_START - (0x1400-0x1480)				
-	for (int i = 0; i < 4; i++) {
-		*(char*)(EEPROM_START + i) = setVoltageLimit[i + 2];
-	}
-	
-	CPU_CCP = CCP_SPM_gc;
-	NVMCTRL_CTRLA = NVMCTRL_CMD_PAGEERASEWRITE_gc;
-	
-	sei();
-}
-
 uint16_t getVoltageLimit() {
 	return (setVoltageLimit[2]-'0')*1000 + (setVoltageLimit[3]-'0')*100 + (setVoltageLimit[4]-'0')*10 + (setVoltageLimit[5]-'0');	
 }
 
 void checkVoltageLimit() {
-	writeVoltageToEEPROM();
+	//writeVoltageToEEPROM();
 	uint16_t voltageLimit = getVoltageLimit();
 	while (cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit) {
 		voltageLimit = getVoltageLimit();
 		//alarmOn();
 		
-		//UARTTransmit(setVoltageLimit);
-		UARTTransmit("BATTERY LOW\n");
+		UARTTransmit(setVoltageLimit);
+		//UARTTransmit("BATTERY LOW\n");
 		
 		PORTB_OUTTGL = PIN5_bm;
 		_delay_ms(100);
@@ -233,24 +241,15 @@ int main(void) {
 	sei();
 	
     while (1) {	
+		/*
 		if (rxdReady == 1) {
 			//writeVoltageToEEPROM();
 			rxdReady = 0;
-		}
+		}*/
 		_delay_ms(1500);
 		
 		measureCells();
 		checkVoltageLimit();
 		UARTTransmit(setVoltageLimit);	
-		
-		
-		// start ADC conversion STCONV
-		/*ADC0_COMMAND = 1;
-		adcResult = ADC0_RES;	
-		
-		PORTB_OUTTGL = (1 << 5);
-		for (uint16_t i = 0; i < adcResult && i < 1000; i++) {
-			_delay_ms(1);
-		}*/
     }
 }
