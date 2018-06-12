@@ -1,25 +1,170 @@
 #include <avr/io.h>
+#include <C:/Users/Jane/Documents/Atmel Studio/7.0/attiny416/attiny416/main.h>
 #include <avr/interrupt.h>
+#include <avr/sleep.h>
 
-#define		F_CPU	2000000UL
+//#define		F_CPU	2000000UL //10x
+//#define		F_CPU	10000000UL //2x
+//#define			F_CPU	5000000UL //4x
+#define			F_CPU	2500000UL //8x
+//#define			F_CPU	1250000UL //16x
+
 #include <util/delay.h>
 
-// TODO: PWM buzzer (alarmOn), sleep, SPI???
 
-volatile uint8_t rxdReady = 0;
-//volatile uint16_t voltageLimit;
-uint8_t transferedBytesRxD = 0;
+// TODO: PWM buzzer (alarmOn), SPI???
 
-char setVoltageLimit[7] = "v:0000\n";
+ISR(RTC_CNT_vect) {
+	//addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);
+	UARTTransmit(sendVoltageLimit);
+	measureCells();
+	checkVoltageLimit();
+	
+	// Overflow interrupt flag has to be cleared manually
+	RTC_INTFLAGS = (1 << RTC_OVF_bp);
+}
 
-uint16_t cell1;
-uint16_t cell2;
-uint16_t cell3;
-uint16_t cell4;
+
+ISR(USART0_RXC_vect) {	
+	// Read incoming data
+	char dataIn[7];
+	dataIn[transferedBytesRxD] = USART0_RXDATAL;
+	
+	// Check if read data matches the template: "v:0000\n"
+	if ((transferedBytesRxD == 0 && dataIn[0] == 'v') || 
+		(transferedBytesRxD == 1 && dataIn[1] == ':') || 
+		(2 <= transferedBytesRxD && transferedBytesRxD <= 5 && 
+		'0' <= dataIn[transferedBytesRxD] && dataIn[transferedBytesRxD] <= '9')) {
+		transferedBytesRxD ++;
+	} else if (transferedBytesRxD == 6 && dataIn[6] == '\n') {
+		voltageLimit = (dataIn[2]-'0')*1000 + (dataIn[3]-'0')*100 + (dataIn[4]-'0')*10 + (dataIn[5]-'0');
+		
+		writeVoltageToEEPROM();
+		transferedBytesRxD = 0;
+		
+		addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);
+		UARTTransmit(sendVoltageLimit);
+	} else {
+		transferedBytesRxD = 0;
+	}
+}
+
+
+void UARTInit() {
+	// Set PINA1 (TxD) as output and high, PINA2 (RxD) as input and high.
+	PORTA_DIR = (1 << PIN1_bp) | (0 << PIN2_bp);
+	PORTA_OUT = (1 << PIN1_bp) | (1 << PIN2_bp);
+	
+	// Write bit to '1' to select alternative communication pins for USART0.
+	// Default: PB2 - TxD, PB3 - RxD; Alternative: PA1 - TxD, PA2 - RxD.
+	PORTMUX_CTRLB = (1 << PORTMUX_USART0_bp);
+	
+	uint32_t baudRate = 9600;
+	USART0_BAUD = ((F_CPU * 64) / (baudRate * 16));
+	// Receive Complete Interrupt Enable
+	USART0_CTRLA = (1 << USART_RXCIE_bp);
+	// Receiver Enable | Transmitter Enable | Start Frame Detection Enable (for waking up from Standby)
+	USART0_CTRLB = (1 << USART_TXEN_bp) | (1 << USART_RXEN_bp) | (1 << USART_SFDEN_bp);
+	// Character Size 8-bit
+	USART0_CTRLC = USART_CHSIZE_8BIT_gc;
+}
+
+
+void UARTTransmitByte(char data) {
+	char dataOut = data;	
+	// While Data Register Empty Flag not set, do not send
+	while (!(USART0_STATUS & (1 << USART_DREIF_bp))) {
+	}	
+	// Transmit Data Register Low Byte
+	USART0_TXDATAL = dataOut;
+}
+
+
+void UARTTransmit(char* dataOut) {
+	char *dataOutPtr = dataOut;
+	
+	// While not zero termination, transmit byte
+	while (*dataOutPtr != 0) {
+		UARTTransmitByte(*dataOutPtr);
+		dataOutPtr ++;
+	} 
+}
+
+
+void ADCInit() {
+	ADC0_CTRLA = (1 << ADC_ENABLE_bp);
+	// Reference Voltage 4.34V
+	VREF_CTRLA = VREF_ADC0REFSEL_4V34_gc;
+}
+
+
+char* voltageToString(uint16_t voltage) {
+	static char buf[5];
+	
+	// Convert integer to character
+	for (int i = 3; i >= 0; i--) {
+		buf[i] = (char)(voltage % 10) + '0';
+		voltage /= 10;
+	}
+	return buf;
+}
+
+
+void addToString(char *dest, char *src, uint8_t destIndex, uint8_t size) {
+	// Add cell voltage level to string allCells
+	for (uint8_t i = 0; i < size; i++) {
+		if (dest[destIndex+i] != 0) {
+			dest[destIndex+i] = src[i];
+		} else {
+			break;
+		}
+	}
+}
+
+
+uint16_t measureCell(ADC_MUXPOS_t pin) {
+	ADC0_MUXPOS = pin; // PA4, PA5, PA6, PA7
+	// Start ADC conversion STCONV
+	ADC0_COMMAND = 1;
+	
+	uint32_t adcRead = ADC0_RES;
+	uint16_t vRef = 4340;
+			
+	return (adcRead * vRef) / 1024;	
+}
+
+
+void measureCells() {	
+	char allCells[42] = "{c1: xxxx, c2: xxxx, c3: xxxx, c4: xxxx}\n";
+	// Send voltage in millivolts
+	addToString(allCells, voltageToString(cell1 = measureCell(ADC_MUXPOS_AIN4_gc)), 5, 4);
+	addToString(allCells, voltageToString(cell2 = measureCell(ADC_MUXPOS_AIN5_gc)), 15, 4);
+	addToString(allCells, voltageToString(cell3 = measureCell(ADC_MUXPOS_AIN6_gc)), 25, 4);
+	addToString(allCells, voltageToString(cell4 = measureCell(ADC_MUXPOS_AIN7_gc)), 35, 4);
+	
+	UARTTransmit(allCells);
+}
+
+void checkVoltageLimit() {	
+	if (cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit) {
+		//alarmOn();
+		
+		//UARTTransmit(setVoltageLimit);
+		//addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);
+		//UARTTransmit(sendVoltageLimit);
+		//UARTTransmit("BATTERY LOW\n");
+		
+		PORTB_OUTTGL = (1 << PIN5_bp);
+	} else {
+		PORTB_OUT = (1 << PIN5_bp);	
+	}
+}
+
 
 void writeVoltageToEEPROM() {
 	cli();
-	while (NVMCTRL_STATUS & NVMCTRL_EEBUSY_bm);
+	while (NVMCTRL_STATUS & (1 << NVMCTRL_EEBUSY_bp)) {	
+	}
 
 	// Only needed to write/erase
 	CPU_CCP = CCP_SPM_gc;  // Key SPM - SPM Instruction Protection
@@ -27,229 +172,92 @@ void writeVoltageToEEPROM() {
 	
 	// Write voltage limit to EEPROM
 	// Start address of EEPROM - EEPROM_START - (0x1400-0x1480)
-	for (int i = 0; i < 4; i++) {
-		*(char*)(EEPROM_START + i) = setVoltageLimit[i + 2];
-	}
+	*(uint8_t*)(EEPROM_START) = (uint8_t)(voltageLimit >> 8); // Get the higher byte of voltageLimit
+	*(uint8_t*)(EEPROM_START + 1) = (uint8_t)voltageLimit; // Get the lower byte of voltageLimit
 	
+	// Enable writing to EEPROM
 	CPU_CCP = CCP_SPM_gc;
 	NVMCTRL_CTRLA = NVMCTRL_CMD_PAGEERASEWRITE_gc;
 	
 	sei();
 }
 
+
 void readVoltageFromEEPROM() {
 	cli();
-	for (int i = 0; i < 4; i++) {
-		setVoltageLimit[i + 2] = *(char*)(EEPROM_START + i);
-	}
+	
+	// Higher byte / lower byte
+	// Start address of EEPROM - EEPROM_START - (0x1400-0x1480)
+	voltageLimit = ((uint16_t)(*(uint8_t*)(EEPROM_START)) << 8) | *(uint8_t*)(EEPROM_START + 1);
+
 	sei();
 }
 
-ISR(USART0_RXC_vect) {	
-	// Read incoming data
-	char dataIn[7];
-	dataIn[transferedBytesRxD] = USART0_RXDATAL;	
-	
-	// Check if read data matches the template: "v:0000\n"
-	switch (transferedBytesRxD) {
-		case 0:
-			if (dataIn[0] == 'v') {
-				transferedBytesRxD ++;
-			} else {
-				transferedBytesRxD = 0;
-			} break;
-		case 1:
-			if (dataIn[1] == ':') {
-				transferedBytesRxD ++;
-			} else {
-				transferedBytesRxD = 0;
-			} break;
-		case 2: case 3: case 4: case 5:
-			if ('0' <= dataIn[transferedBytesRxD] && dataIn[transferedBytesRxD] <= '9') {
-				transferedBytesRxD ++;
-			} else {
-				transferedBytesRxD = 0;
-			} break;	
-		case 6:
-			if (dataIn[6] == '\n') {
-				for (int i = 0; i < 7; i++)	{
-					setVoltageLimit[i] = dataIn[i];
-				}
-				writeVoltageToEEPROM();	
-				//rxdReady = 1;
-			} 
-			transferedBytesRxD = 0;
-			break;	
-	}
-}
 
-
-void UARTInit() {
-	// Set PINA1 (TxD) as output and high, PINA2 (RxD) as input and high.
-	PORTA_DIR = PIN1_bm | (0 << PIN2_bp);
-	PORTA_OUT = PIN1_bm | PIN2_bm;
+void RTCInit() {
+	CPU_CCP = CCP_IOREG_gc;
+	CLKCTRL_OSC32KCTRLA = (1 << CLKCTRL_RUNSTDBY_bp);
 	
-	// Write bit to '1' to select alternative communication pins for USART0.
-	// Default: PB2 - TxD, PB3 - RxD; Alternative: PA1 - TxD, PA2 - RxD.
-	PORTMUX_CTRLB = PORTMUX_USART0_bm;
-	
-	uint32_t baudRate = 57600;
-	USART0_BAUD = ((F_CPU * 64) / (baudRate * 16));
-	// Receive Complete Interrupt Enable
-	USART0_CTRLA = USART_RXCIE_bm;
-	// Receiver Enable | Transmitter Enable
-	USART0_CTRLB = USART_TXEN_bm | USART_RXEN_bm;
-	// Character Size 8-bit
-	USART0_CTRLC = USART_CHSIZE_8BIT_gc;
-}
-
-void UARTTransmitByte(char dataOut) {	
-	// While Data Register Empty Flag not set, do not send
-	while (!(USART0_STATUS & USART_DREIF_bm)) {
+	while (RTC_STATUS > 0) { // Wait for all register to be synchronised
 	}	
-	// Transmit Data Register Low Byte
-	USART0_TXDATAL = dataOut;
-}
-
-void UARTTransmit(char* dataOut) {
-	char* dataOutPtr = dataOut;
 	
-	// While not zero termination, transmit byte
-	while (*dataOutPtr != 0) {
-		UARTTransmitByte(*dataOutPtr);
-		dataOutPtr ++;
-	}
-}
-
-void ADCInit() {
-	ADC0_CTRLA = ADC_ENABLE_bm;
-	// Reference Voltage 4.34V
-	VREF_CTRLA = VREF_ADC0REFSEL_4V34_gc;
-}
-
-char* voltageToString(uint16_t voltage) {
-	static char buf[5];  //???????????????????
-	
-	// Convert integer to character
-	for (int i = 3; i >= 0; i--) {
-		buf[i] = (char)(voltage % 10) + '0';
-		voltage /= 10;
-	}
-	return buf; //????????????????????
-}
-
-void concatenateString(char *dest, char *src, uint8_t destIndex) {
-	// Add cell voltage level to string allCells
-	for (uint8_t i = 0; i < 4; i++) {
-		dest[destIndex+i] = src[i];
-	}
-}
-
-void measureCells() {	
-	uint16_t vRef = 4340; // 4.34 V	
-	
-	// Set AIN4 as ADC - cell 1
-	ADC0_MUXPOS = ADC_MUXPOS_AIN4_gc; // PA4	
-	// Start ADC conversion STCONV
-	ADC0_COMMAND = 1;
-	uint32_t adcRead = ADC0_RES;	
-	cell1 = (adcRead * vRef) / 1024;
-
-	// Set AIN5 as ADC - cell 2
-	ADC0_MUXPOS = ADC_MUXPOS_AIN5_gc; // PA5
-	ADC0_COMMAND = 1;
-	adcRead = ADC0_RES;		
-	cell2 = (adcRead * vRef) / 1024;
-	
-	// Set AIN6 as ADC - cell 3
-	ADC0_MUXPOS = ADC_MUXPOS_AIN6_gc; // PA6
-	ADC0_COMMAND = 1;
-	adcRead = ADC0_RES;
-	cell3 = (adcRead * vRef) / 1024;
-	
-	// Set AIN7 as ADC - cell 4
-	ADC0_MUXPOS = ADC_MUXPOS_AIN7_gc; // PA7
-	ADC0_COMMAND = 1;
-	adcRead = ADC0_RES;	
-	cell4 = (adcRead * vRef) / 1024;	
-	
-	char allCells[42] = "{c1: xxxx, c2: xxxx, c3: xxxx, c4: xxxx}\n";
-	// Send voltage in millivolts
-	concatenateString(allCells, voltageToString(cell1), 5);
-	concatenateString(allCells, voltageToString(cell2), 15);
-	concatenateString(allCells, voltageToString(cell3), 25);
-	concatenateString(allCells, voltageToString(cell4), 35);
-	
-	UARTTransmit(allCells);
+	// 32 prescaler (1000 counts per second), RTC enable, allow RTC standby
+	RTC_CTRLA = RTC_PRESCALER_DIV32_gc | (1 << RTC_RTCEN_bp) | (1 << RTC_RUNSTDBY_bp);
+	//RTC_PER = 0x200; //512
+	RTC_PER = 0x400; //1024	
+	// Compare match interrupt disable, overflow enable
+	RTC_INTCTRL = (0 << RTC_CMP_bp) | (1 << RTC_OVF_bp);	
 }
 
 
 void alarmOn() {
 	// PORTB_OUTTGL = PIN5_bm;
-	// PWM Buzzer
-}
-
-void sleepMode() {
-	// RTC - real time counter interrupt
-	
-	// Set Sleep Mode, Sleep Mode Enable
-	SLPCTRL_CTRLA = SLEEP_MODE_STANDBY | SLPCTRL_SEN_bm;
-}
-
-uint16_t getVoltageLimit() {
-	return (setVoltageLimit[2]-'0')*1000 + (setVoltageLimit[3]-'0')*100 + (setVoltageLimit[4]-'0')*10 + (setVoltageLimit[5]-'0');	
-}
-
-void checkVoltageLimit() {
-	//writeVoltageToEEPROM();
-	uint16_t voltageLimit = getVoltageLimit();
-	while (cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit) {
-		voltageLimit = getVoltageLimit();
-		//alarmOn();
-		
-		UARTTransmit(setVoltageLimit);
-		//UARTTransmit("BATTERY LOW\n");
-		
-		PORTB_OUTTGL = PIN5_bm;
-		_delay_ms(100);
-	}
-	PORTB_OUTTGL = (0 << PIN5_bp);
+	// PWM Buzzer // 2400Hz
 }
 
 
 int main(void) {
 	// Divide 20MHz Clock by 10 -> 2MHz Clock
 	CPU_CCP = CCP_IOREG_gc;
-	CLKCTRL_MCLKCTRLB = CLKCTRL_PEN_bm | CLKCTRL_PDIV_10X_gc;
+	//CLKCTRL_MCLKCTRLB = CLKCTRL_PEN_bm | CLKCTRL_PDIV_10X_gc;
+	CLKCTRL_MCLKCTRLB = (1 << CLKCTRL_PEN_bp) | CLKCTRL_PDIV_8X_gc;
 	
 	//EEPROM not erased under chip erase
 	//If the device is locked the EEPROM is always erased by a chip erase, regardless of this bit.
-	FUSE_SYSCFG0 = FUSE_EESAVE_bm;
+	FUSE_SYSCFG0 |= (1 << FUSE_EESAVE_bp);
 	
 	UARTInit();
 	ADCInit();
+	RTCInit();
 	
 	// Toggle LED when connected
 	PORTB_DIR = (1 << PIN5_bp);
 	for (uint8_t i = 5; i > 0; i--) {
-		PORTB_OUTTGL = PIN5_bm;
+		PORTB_OUTTGL = (1 << PIN5_bp);
 		_delay_ms(100);
 	}
 	
-	readVoltageFromEEPROM();
+	if (*(uint8_t*)(EEPROM_START) != 255 && *(uint8_t*)(EEPROM_START+1) != 255) {
+		readVoltageFromEEPROM();	
+		addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);	
+	}	
 	
 	sei();
 	
+	set_sleep_mode(SLEEP_MODE_STANDBY);
+	sleep_enable();	
+	
     while (1) {	
+		sleep_cpu();
+
+		_delay_ms(2);
 		/*
-		if (rxdReady == 1) {
-			//writeVoltageToEEPROM();
-			rxdReady = 0;
+		if (goToSleep == 1) {
+			sleep_enable();
+			sleep_cpu();
+		} else {
+			sleep_disable()
 		}*/
-		_delay_ms(1500);
-		
-		measureCells();
-		checkVoltageLimit();
-		UARTTransmit(setVoltageLimit);	
+	
     }
 }
