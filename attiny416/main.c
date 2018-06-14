@@ -3,16 +3,14 @@
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 
+//#define		F_CPU	1250000UL //16x
 //#define		F_CPU	2000000UL //10x
-//#define		F_CPU	10000000UL //2x
-//#define			F_CPU	5000000UL //4x
 #define			F_CPU	2500000UL //8x
-//#define			F_CPU	1250000UL //16x
+//#define		F_CPU	5000000UL //4x
+//#define		F_CPU	10000000UL //2x
 
 #include <util/delay.h>
 
-
-// TODO: PWM buzzer (alarmOn), SPI???
 
 ISR(RTC_CNT_vect) {
 	//addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);
@@ -23,6 +21,53 @@ ISR(RTC_CNT_vect) {
 	// Overflow interrupt flag has to be cleared manually
 	RTC_INTFLAGS = (1 << RTC_OVF_bp);
 }
+
+
+ISR(TCA0_CMP0_vect) {		
+	if (buzzerCntr <= 1000) {
+		if (buzzerCntr == 500) {
+			// Disable WO0 (PB0) PWM output
+			TCA0_SINGLE_CTRLB = (0 << TCA_SINGLE_CMP0EN_bp);
+		} else if (buzzerCntr == 1000) {
+			// Enable WO0 (PB0) PWM output and set PWM mode to single slope
+			TCA0_SINGLE_CTRLB = (1 << TCA_SINGLE_CMP0EN_bp) | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
+		}
+		buzzerCntr ++;		
+	} else {
+		buzzerCntr = 0;
+	}
+	
+	/*
+	if (buzzerCntr < 500) {
+		// Disable WO0 (PB0) PWM output
+		TCA0_SINGLE_CTRLB = (0 << TCA_SINGLE_CMP0EN_bp);
+		buzzerCntr ++;
+	} else if (buzzerCntr >= 500 && buzzerCntr < 1000) {
+		// Enable WO0 (PB0) PWM output and set PWM mode to single slope
+		TCA0_SINGLE_CTRLB = (1 << TCA_SINGLE_CMP0EN_bp) | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
+		buzzerCntr ++;
+	} else {
+		buzzerCntr = 0;
+	}*/
+	
+	TCA0_SINGLE_INTFLAGS = (1 << TCA_SINGLE_CMP0_bp);
+}
+/*
+ISR(TCA0_CMP0_vect) {
+	if (buzzerCntr == 0) {
+		TCA0_SINGLE_CTRLB = (1 << TCA_SINGLE_CMP0EN_bp) | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
+	} else if (buzzerCntr == 600) {
+		TCA0_SINGLE_CTRLB = (0 << TCA_SINGLE_CMP0EN_bp);
+	}
+	
+	if (buzzerCntr < 1200) {
+		buzzerCntr ++;
+	} else if (buzzerCntr == 1200) {
+		buzzerCntr = 0;
+	}
+	
+	TCA0_SINGLE_INTFLAGS = (1 << TCA_SINGLE_CMP0_bp);
+}*/
 
 
 ISR(USART0_RXC_vect) {	
@@ -147,16 +192,14 @@ void measureCells() {
 
 void checkVoltageLimit() {	
 	if (cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit) {
-		//alarmOn();
-		
-		//UARTTransmit(setVoltageLimit);
-		//addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);
-		//UARTTransmit(sendVoltageLimit);
-		//UARTTransmit("BATTERY LOW\n");
-		
-		PORTB_OUTTGL = (1 << PIN5_bp);
+		// Enable PWM Timer Interrupt and disable sleep
+		TCA0_SINGLE_INTCTRL = (1 << TCA_SINGLE_CMP0_bp);
+		sleep_disable();		
 	} else {
-		PORTB_OUT = (1 << PIN5_bp);	
+		// Disable PWM Timer Interrupt and enable sleep
+		TCA0_SINGLE_INTCTRL = (0 << TCA_SINGLE_CMP0_bp);
+		TCA0_SINGLE_CTRLB = (0 << TCA_SINGLE_CMP0EN_bp);
+		sleep_enable();
 	}
 }
 
@@ -186,9 +229,12 @@ void writeVoltageToEEPROM() {
 void readVoltageFromEEPROM() {
 	cli();
 	
-	// Higher byte / lower byte
 	// Start address of EEPROM - EEPROM_START - (0x1400-0x1480)
-	voltageLimit = ((uint16_t)(*(uint8_t*)(EEPROM_START)) << 8) | *(uint8_t*)(EEPROM_START + 1);
+	if (*(uint8_t*)(EEPROM_START) != 255 && *(uint8_t*)(EEPROM_START+1) != 255) {
+		// Higher byte / lower byte
+		voltageLimit = ((uint16_t)(*(uint8_t*)(EEPROM_START)) << 8) | *(uint8_t*)(EEPROM_START + 1);
+		addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);
+	}
 
 	sei();
 }
@@ -203,16 +249,35 @@ void RTCInit() {
 	
 	// 32 prescaler (1000 counts per second), RTC enable, allow RTC standby
 	RTC_CTRLA = RTC_PRESCALER_DIV32_gc | (1 << RTC_RTCEN_bp) | (1 << RTC_RUNSTDBY_bp);
-	//RTC_PER = 0x200; //512
 	RTC_PER = 0x400; //1024	
 	// Compare match interrupt disable, overflow enable
 	RTC_INTCTRL = (0 << RTC_CMP_bp) | (1 << RTC_OVF_bp);	
 }
 
 
-void alarmOn() {
-	// PORTB_OUTTGL = PIN5_bm;
-	// PWM Buzzer // 2400Hz
+void bzrTimerInit() {
+	uint16_t freq = 2400;
+	//uint16_t freq = 1900;
+	//2400Hz, 50% duty
+	// PWM Pin PB0 (default output)
+	//PORTMUX_CTRLC = (1 << PORTMUX_TCA00_bp);
+	
+	PORTB_DIR |= (1 << PIN0_bp);
+	
+	TCA0_SINGLE_PER = ((F_CPU / 64) / freq) - 1;
+	TCA0_SINGLE_CMP0 = ((F_CPU / 64) / (freq * 2)) - 1;
+	
+	//TCA0_SINGLE_PER = (F_CPU / (freq * 64)) - 1;
+	//TCA0_SINGLE_CMP0 = (F_CPU / (freq * 64 * 2)) - 1;
+	
+	//clk div/64 | enable
+	TCA0_SINGLE_CTRLA = (1 << TCA_SINGLE_ENABLE_bp) | TCA_SINGLE_CLKSEL_DIV64_gc;	
+	//TCA0_SINGLE_CTRLA = TCA_SINGLE_CLKSEL_DIV64_gc;	
+	// Compare 0 enable | Single slope PWM
+	//TCA0_SINGLE_CTRLB = (1 << TCA_SINGLE_CMP0EN_bp) | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;	
+	//TCA0_SINGLE_CTRLB = TCA_SINGLE_WGMODE_SINGLESLOPE_gc;	
+	// Compare channel 0 interrupt enable
+	//TCA0_SINGLE_INTCTRL = (1 << TCA_SINGLE_CMP0_bp);
 }
 
 
@@ -229,35 +294,23 @@ int main(void) {
 	UARTInit();
 	ADCInit();
 	RTCInit();
+	bzrTimerInit();
 	
 	// Toggle LED when connected
-	PORTB_DIR = (1 << PIN5_bp);
+	PORTB_DIR |= (1 << PIN5_bp);
 	for (uint8_t i = 5; i > 0; i--) {
-		PORTB_OUTTGL = (1 << PIN5_bp);
+		PORTB_OUTTGL |= (1 << PIN5_bp);
 		_delay_ms(100);
 	}
 	
-	if (*(uint8_t*)(EEPROM_START) != 255 && *(uint8_t*)(EEPROM_START+1) != 255) {
-		readVoltageFromEEPROM();	
-		addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);	
-	}	
+	readVoltageFromEEPROM();
+	
+	set_sleep_mode(SLEEP_MODE_STANDBY);
 	
 	sei();
 	
-	set_sleep_mode(SLEEP_MODE_STANDBY);
-	sleep_enable();	
-	
     while (1) {	
+		_delay_ms(10);
 		sleep_cpu();
-
-		_delay_ms(2);
-		/*
-		if (goToSleep == 1) {
-			sleep_enable();
-			sleep_cpu();
-		} else {
-			sleep_disable()
-		}*/
-	
     }
 }

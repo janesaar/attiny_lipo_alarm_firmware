@@ -1,7 +1,7 @@
 #ifndef MAIN_H_
 #define MAIN_H_
 
-volatile uint8_t goToSleep = 1;
+uint16_t buzzerCntr = 0;
 
 uint8_t transferedBytesRxD = 0;
 uint16_t voltageLimit = 0;
@@ -22,11 +22,9 @@ void checkVoltageLimit();
 void writeVoltageToEEPROM();
 void readVoltageFromEEPROM();
 
-void alarmOn();
-
 void RTCInit();
 void UARTInit();
 void ADCInit();
-void sleepInit();
+void bzrTimerInit();
 
 #endif /* MAIN_H_ */
