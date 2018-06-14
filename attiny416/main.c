@@ -1,5 +1,6 @@
 #include <avr/io.h>
-#include <C:/Users/Jane/Documents/Atmel Studio/7.0/attiny416/attiny416/main.h>
+//#include <C:/Users/Jane/Documents/Atmel Studio/7.0/attiny416/attiny416/main.h>
+#include <main.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 
