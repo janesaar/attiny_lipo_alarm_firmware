@@ -5,7 +5,8 @@ uint16_t buzzerCntr = 0;
 
 uint8_t transferedBytesRxD = 0;
 uint16_t voltageLimit = 0;
-char sendVoltageLimit[7] = "v:0000\n";
+char sendVoltageLimit[8] = "v:0000\n";
+char dataIn[8];
 
 uint16_t cell1;
 uint16_t cell2;

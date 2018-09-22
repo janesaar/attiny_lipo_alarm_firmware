@@ -1,79 +1,49 @@
 #include <avr/io.h>
-//#include <C:/Users/Jane/Documents/Atmel Studio/7.0/attiny416/attiny416/main.h>
 #include <main.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 
-//#define		F_CPU	1250000UL //16x
 //#define		F_CPU	2000000UL //10x
 #define			F_CPU	2500000UL //8x
-//#define		F_CPU	5000000UL //4x
-//#define		F_CPU	10000000UL //2x
 
 #include <util/delay.h>
 
 
 ISR(RTC_CNT_vect) {
-	//addToString(sendVoltageLimit, voltageToString(voltageLimit), 2, 4);
-	UARTTransmit(sendVoltageLimit);
+	//UARTTransmit(sendVoltageLimit);
 	measureCells();
 	checkVoltageLimit();
+	//PORTB_OUT = 0;
 	
 	// Overflow interrupt flag has to be cleared manually
 	RTC_INTFLAGS = (1 << RTC_OVF_bp);
 }
 
 
-ISR(TCA0_CMP0_vect) {		
+
+ISR(TCA0_HUNF_vect) {
+	//PORTA_OUTTGL = (1 << PIN4_bp);
 	if (buzzerCntr <= 1000) {
-		if (buzzerCntr == 500) {
-			// Disable WO0 (PB0) PWM output
-			TCA0_SINGLE_CTRLB = (0 << TCA_SINGLE_CMP0EN_bp);
-		} else if (buzzerCntr == 1000) {
-			// Enable WO0 (PB0) PWM output and set PWM mode to single slope
-			TCA0_SINGLE_CTRLB = (1 << TCA_SINGLE_CMP0EN_bp) | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
-		}
-		buzzerCntr ++;		
-	} else {
-		buzzerCntr = 0;
+		PORTA_OUTTGL &= (0 << PIN4_bp) & (0 << PIN5_bp);
+		buzzerCntr ++;
+	}
+	else if (buzzerCntr < 2000) { //1000
+		PORTA_OUTTGL = (1 << PIN4_bp) | (1 << PIN5_bp);
+		buzzerCntr ++;
+	}
+	else {
+		PORTA_OUTTGL = (1 << PIN4_bp) | (1 << PIN5_bp);
+		buzzerCntr = 0;		
 	}
 	
-	/*
-	if (buzzerCntr < 500) {
-		// Disable WO0 (PB0) PWM output
-		TCA0_SINGLE_CTRLB = (0 << TCA_SINGLE_CMP0EN_bp);
-		buzzerCntr ++;
-	} else if (buzzerCntr >= 500 && buzzerCntr < 1000) {
-		// Enable WO0 (PB0) PWM output and set PWM mode to single slope
-		TCA0_SINGLE_CTRLB = (1 << TCA_SINGLE_CMP0EN_bp) | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
-		buzzerCntr ++;
-	} else {
-		buzzerCntr = 0;
-	}*/
-	
-	TCA0_SINGLE_INTFLAGS = (1 << TCA_SINGLE_CMP0_bp);
+	//TCA0_SPLIT_INTFLAGS = (1 << TCA_SPLIT_LCMP0_bp);
+	TCA0_SPLIT_INTFLAGS = TCA_SPLIT_HUNF_bm;
 }
-/*
-ISR(TCA0_CMP0_vect) {
-	if (buzzerCntr == 0) {
-		TCA0_SINGLE_CTRLB = (1 << TCA_SINGLE_CMP0EN_bp) | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
-	} else if (buzzerCntr == 600) {
-		TCA0_SINGLE_CTRLB = (0 << TCA_SINGLE_CMP0EN_bp);
-	}
-	
-	if (buzzerCntr < 1200) {
-		buzzerCntr ++;
-	} else if (buzzerCntr == 1200) {
-		buzzerCntr = 0;
-	}
-	
-	TCA0_SINGLE_INTFLAGS = (1 << TCA_SINGLE_CMP0_bp);
-}*/
+
 
 
 ISR(USART0_RXC_vect) {	
 	// Read incoming data
-	char dataIn[7];
 	dataIn[transferedBytesRxD] = USART0_RXDATAL;
 	
 	// Check if read data matches the template: "v:0000\n"
@@ -169,9 +139,13 @@ void addToString(char *dest, char *src, uint8_t destIndex, uint8_t size) {
 
 
 uint16_t measureCell(ADC_MUXPOS_t pin) {
-	ADC0_MUXPOS = pin; // PA4, PA5, PA6, PA7
+	ADC0_MUXPOS = pin; // PB4, PB5, PA6, PA7
 	// Start ADC conversion STCONV
 	ADC0_COMMAND = 1;
+	
+	while (!(ADC0_INTFLAGS & ADC_RESRDY_bm)) {
+		// Wait for ADC to be ready
+	}
 	
 	uint32_t adcRead = ADC0_RES;
 	uint16_t vRef = 4340;
@@ -182,25 +156,57 @@ uint16_t measureCell(ADC_MUXPOS_t pin) {
 
 void measureCells() {	
 	char allCells[42] = "{c1: xxxx, c2: xxxx, c3: xxxx, c4: xxxx}\n";
+	// EN_S4 = PB3, EN_S3 = PB2, EN_S2 = PB1
+	
+	/*cell1 = measureCell(ADC_MUXPOS_AIN9_gc);
+	
+	PORTB_OUT |= (1 << PIN1_bp);
+	cell2 = measureCell(ADC_MUXPOS_AIN8_gc);
+	PORTB_OUT &= ~(1 << PIN1_bp);
+	
+	PORTB_OUT |= (1 << PIN2_bp);
+	cell3 = measureCell(ADC_MUXPOS_AIN7_gc);
+	PORTB_OUT &= ~(1 << PIN2_bp);
+	
+	PORTB_OUT |= (1 << PIN3_bp);
+	cell4 = measureCell(ADC_MUXPOS_AIN6_gc);
+	PORTB_OUT &= ~(1 << PIN3_bp);*/
+	
 	// Send voltage in millivolts
-	addToString(allCells, voltageToString(cell1 = measureCell(ADC_MUXPOS_AIN4_gc)), 5, 4);
-	addToString(allCells, voltageToString(cell2 = measureCell(ADC_MUXPOS_AIN5_gc)), 15, 4);
-	addToString(allCells, voltageToString(cell3 = measureCell(ADC_MUXPOS_AIN6_gc)), 25, 4);
-	addToString(allCells, voltageToString(cell4 = measureCell(ADC_MUXPOS_AIN7_gc)), 35, 4);
+	addToString(allCells, voltageToString(cell1 = measureCell(ADC_MUXPOS_AIN9_gc)), 5, 4);
+	
+	PORTB_OUT |= (1 << PIN1_bp);
+	addToString(allCells, voltageToString(cell2 = measureCell(ADC_MUXPOS_AIN8_gc)), 15, 4);
+	//PORTB_OUT &= ~(1 << PIN1_bp);
+	
+	PORTB_OUT |= (1 << PIN2_bp);
+	addToString(allCells, voltageToString(cell3 = measureCell(ADC_MUXPOS_AIN7_gc)), 25, 4);
+	//PORTB_OUT &= ~(1 << PIN2_bp);
+	
+	PORTB_OUT |= (1 << PIN3_bp);
+	addToString(allCells, voltageToString(cell4 = measureCell(ADC_MUXPOS_AIN6_gc)), 35, 4);
+	//PORTB_OUT &= ~(1 << PIN3_bp);
+
 	
 	UARTTransmit(allCells);
 }
 
+
 void checkVoltageLimit() {	
 	if (cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit) {
 		// Enable PWM Timer Interrupt and disable sleep
-		TCA0_SINGLE_INTCTRL = (1 << TCA_SINGLE_CMP0_bp);
-		sleep_disable();		
+		if (!(TCA0_SPLIT_INTCTRL & TCA_SPLIT_HUNF_bm)) {
+			TCA0_SPLIT_INTCTRL = TCA_SPLIT_HUNF_bm;
+			sleep_disable();
+		}	
 	} else {
 		// Disable PWM Timer Interrupt and enable sleep
-		TCA0_SINGLE_INTCTRL = (0 << TCA_SINGLE_CMP0_bp);
-		TCA0_SINGLE_CTRLB = (0 << TCA_SINGLE_CMP0EN_bp);
-		sleep_enable();
+		if (TCA0_SPLIT_INTCTRL & TCA_SPLIT_HUNF_bm) {
+			TCA0_SPLIT_INTCTRL = (0 << TCA_SPLIT_HUNF_bm);
+			PORTA_OUTTGL &= (0 << PIN4_bp) & (0 << PIN5_bp);
+			PORTA_OUT &= ~(1 << PIN5_bp);
+			sleep_enable();
+		}
 	}
 }
 
@@ -259,26 +265,18 @@ void RTCInit() {
 void bzrTimerInit() {
 	uint16_t freq = 2400;
 	//uint16_t freq = 1900;
-	//2400Hz, 50% duty
+	// 2400Hz, 50% duty
 	// PWM Pin PB0 (default output)
 	//PORTMUX_CTRLC = (1 << PORTMUX_TCA00_bp);
 	
-	PORTB_DIR |= (1 << PIN0_bp);
+	PORTA_DIR |= (1 << PIN4_bp);
 	
-	TCA0_SINGLE_PER = ((F_CPU / 64) / freq) - 1;
-	TCA0_SINGLE_CMP0 = ((F_CPU / 64) / (freq * 2)) - 1;
-	
-	//TCA0_SINGLE_PER = (F_CPU / (freq * 64)) - 1;
-	//TCA0_SINGLE_CMP0 = (F_CPU / (freq * 64 * 2)) - 1;
+	TCA0_SPLIT_CTRLD = (1 << TCA_SPLIT_SPLITM_bp);
+	TCA0_SPLIT_HPER = (((F_CPU / 64) / freq) - 1) / 2;
 	
 	//clk div/64 | enable
-	TCA0_SINGLE_CTRLA = (1 << TCA_SINGLE_ENABLE_bp) | TCA_SINGLE_CLKSEL_DIV64_gc;	
-	//TCA0_SINGLE_CTRLA = TCA_SINGLE_CLKSEL_DIV64_gc;	
-	// Compare 0 enable | Single slope PWM
-	//TCA0_SINGLE_CTRLB = (1 << TCA_SINGLE_CMP0EN_bp) | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;	
-	//TCA0_SINGLE_CTRLB = TCA_SINGLE_WGMODE_SINGLESLOPE_gc;	
-	// Compare channel 0 interrupt enable
-	//TCA0_SINGLE_INTCTRL = (1 << TCA_SINGLE_CMP0_bp);
+	TCA0_SPLIT_CTRLA = TCA_SPLIT_ENABLE_bm | TCA_SPLIT_CLKSEL_DIV64_gc;	
+	
 }
 
 
@@ -288,9 +286,11 @@ int main(void) {
 	//CLKCTRL_MCLKCTRLB = CLKCTRL_PEN_bm | CLKCTRL_PDIV_10X_gc;
 	CLKCTRL_MCLKCTRLB = (1 << CLKCTRL_PEN_bp) | CLKCTRL_PDIV_8X_gc;
 	
-	//EEPROM not erased under chip erase
-	//If the device is locked the EEPROM is always erased by a chip erase, regardless of this bit.
+	// EEPROM not erased under chip erase
+	// If the device is locked the EEPROM is always erased by a chip erase, regardless of this bit.
 	FUSE_SYSCFG0 |= (1 << FUSE_EESAVE_bp);
+	
+	PORTB_DIR = (1 << PIN1_bp) | (1 << PIN2_bp) | (1 << PIN3_bp);
 	
 	UARTInit();
 	ADCInit();
@@ -298,9 +298,9 @@ int main(void) {
 	bzrTimerInit();
 	
 	// Toggle LED when connected
-	PORTB_DIR |= (1 << PIN5_bp);
-	for (uint8_t i = 5; i > 0; i--) {
-		PORTB_OUTTGL |= (1 << PIN5_bp);
+	PORTA_DIR |= (1 << PIN5_bp);
+	for (uint8_t i = 6; i > 0; i--) {
+		PORTA_OUTTGL |= (1 << PIN5_bp);
 		_delay_ms(100);
 	}
 	
