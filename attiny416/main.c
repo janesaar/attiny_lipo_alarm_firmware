@@ -10,10 +10,9 @@
 
 
 ISR(RTC_CNT_vect) {
-	//UARTTransmit(sendVoltageLimit);
-	measureCells();
-	checkVoltageLimit();
-	//PORTB_OUT = 0;
+	shouldMeasure = 1;
+	
+	sleep_disable();
 	
 	// Overflow interrupt flag has to be cleared manually
 	RTC_INTFLAGS = (1 << RTC_OVF_bp);
@@ -23,20 +22,22 @@ ISR(RTC_CNT_vect) {
 
 ISR(TCA0_HUNF_vect) {
 	//PORTA_OUTTGL = (1 << PIN4_bp);
-	if (buzzerCntr <= 1000) {
-		PORTA_OUTTGL &= (0 << PIN4_bp) & (0 << PIN5_bp);
-		buzzerCntr ++;
-	}
-	else if (buzzerCntr < 2000) { //1000
-		PORTA_OUTTGL = (1 << PIN4_bp) | (1 << PIN5_bp);
-		buzzerCntr ++;
+	if (buzzerCntr < 2000) { //1000
+		if (buzzerCntr == 0) {
+			PORTA_OUTCLR |= (1 << PIN5_bp);
+			TCA0_SPLIT_CTRLB &= ~TCA_SPLIT_HCMP1EN_bm;
+		}
+		else if (buzzerCntr == 1000) {
+			PORTA_OUTSET |= (1 << PIN5_bp);
+			TCA0_SPLIT_CTRLB |= TCA_SPLIT_HCMP1EN_bm;
+		}
+			
+		buzzerCntr++;
 	}
 	else {
-		PORTA_OUTTGL = (1 << PIN4_bp) | (1 << PIN5_bp);
-		buzzerCntr = 0;		
+		buzzerCntr = 0;
 	}
 	
-	//TCA0_SPLIT_INTFLAGS = (1 << TCA_SPLIT_LCMP0_bp);
 	TCA0_SPLIT_INTFLAGS = TCA_SPLIT_HUNF_bm;
 }
 
@@ -111,6 +112,10 @@ void ADCInit() {
 	ADC0_CTRLA = (1 << ADC_ENABLE_bp);
 	// Reference Voltage 4.34V
 	VREF_CTRLA = VREF_ADC0REFSEL_4V34_gc;
+	
+	ADC0_CTRLD = ADC_SAMPDLY_gm;
+	
+	ADC0_SAMPCTRL = ADC_SAMPLEN_gm;
 }
 
 
@@ -158,58 +163,59 @@ void measureCells() {
 	char allCells[42] = "{c1: xxxx, c2: xxxx, c3: xxxx, c4: xxxx}\n";
 	// EN_S4 = PB3, EN_S3 = PB2, EN_S2 = PB1
 	
-	/*cell1 = measureCell(ADC_MUXPOS_AIN9_gc);
+	// Send voltage in millivolts
+	cell1 = measureCell(ADC_MUXPOS_AIN9_gc);
 	
 	PORTB_OUT |= (1 << PIN1_bp);
-	cell2 = measureCell(ADC_MUXPOS_AIN8_gc);
+	_delay_us(200);
+	cell2 = measureCell(ADC_MUXPOS_AIN8_gc);	
 	PORTB_OUT &= ~(1 << PIN1_bp);
 	
 	PORTB_OUT |= (1 << PIN2_bp);
-	cell3 = measureCell(ADC_MUXPOS_AIN7_gc);
+	_delay_us(200);
+	cell3 = measureCell(ADC_MUXPOS_AIN7_gc);	
 	PORTB_OUT &= ~(1 << PIN2_bp);
 	
 	PORTB_OUT |= (1 << PIN3_bp);
-	cell4 = measureCell(ADC_MUXPOS_AIN6_gc);
-	PORTB_OUT &= ~(1 << PIN3_bp);*/
+	_delay_us(200);
+	cell4 = measureCell(ADC_MUXPOS_AIN6_gc);	
+	PORTB_OUT &= ~(1 << PIN3_bp);
 	
-	// Send voltage in millivolts
-	addToString(allCells, voltageToString(cell1 = measureCell(ADC_MUXPOS_AIN9_gc)), 5, 4);
-	
-	PORTB_OUT |= (1 << PIN1_bp);
-	addToString(allCells, voltageToString(cell2 = measureCell(ADC_MUXPOS_AIN8_gc)), 15, 4);
-	//PORTB_OUT &= ~(1 << PIN1_bp);
-	
-	PORTB_OUT |= (1 << PIN2_bp);
-	addToString(allCells, voltageToString(cell3 = measureCell(ADC_MUXPOS_AIN7_gc)), 25, 4);
-	//PORTB_OUT &= ~(1 << PIN2_bp);
-	
-	PORTB_OUT |= (1 << PIN3_bp);
-	addToString(allCells, voltageToString(cell4 = measureCell(ADC_MUXPOS_AIN6_gc)), 35, 4);
-	//PORTB_OUT &= ~(1 << PIN3_bp);
-
+	addToString(allCells, voltageToString(cell1), 5, 4);
+	addToString(allCells, voltageToString(cell2), 15, 4);
+	addToString(allCells, voltageToString(cell3), 25, 4);
+	addToString(allCells, voltageToString(cell4), 35, 4);
 	
 	UARTTransmit(allCells);
 }
 
 
-void checkVoltageLimit() {	
-	if (cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit) {
-		// Enable PWM Timer Interrupt and disable sleep
+void checkVoltageLimit() {
+	isVoltageLow = cell1 < voltageLimit || cell2 < voltageLimit || cell3 < voltageLimit || cell4 < voltageLimit;
+	
+	if (isVoltageLow) {		
+		// Enable alarm and disable sleep
 		if (!(TCA0_SPLIT_INTCTRL & TCA_SPLIT_HUNF_bm)) {
-			TCA0_SPLIT_INTCTRL = TCA_SPLIT_HUNF_bm;
+			enableAlarm();
 			sleep_disable();
 		}	
-	} else {
-		// Disable PWM Timer Interrupt and enable sleep
+	} else {		
+		// Disable alarm
 		if (TCA0_SPLIT_INTCTRL & TCA_SPLIT_HUNF_bm) {
-			TCA0_SPLIT_INTCTRL = (0 << TCA_SPLIT_HUNF_bm);
-			PORTA_OUTTGL &= (0 << PIN4_bp) & (0 << PIN5_bp);
-			PORTA_OUT &= ~(1 << PIN5_bp);
-			sleep_enable();
+			disableAlarm();
 		}
 	}
 }
 
+void enableAlarm() {
+	TCA0_SPLIT_INTCTRL = TCA_SPLIT_HUNF_bm;
+}
+
+void disableAlarm() {
+	TCA0_SPLIT_CTRLB &= ~TCA_SPLIT_HCMP1EN_bm;
+	TCA0_SPLIT_INTCTRL &= ~(1 << TCA_SPLIT_HUNF_bp);
+	PORTA_OUTCLR |= (1 << PIN4_bp) | (1 << PIN5_bp);
+}
 
 void writeVoltageToEEPROM() {
 	cli();
@@ -272,11 +278,16 @@ void bzrTimerInit() {
 	PORTA_DIR |= (1 << PIN4_bp);
 	
 	TCA0_SPLIT_CTRLD = (1 << TCA_SPLIT_SPLITM_bp);
-	TCA0_SPLIT_HPER = (((F_CPU / 64) / freq) - 1) / 2;
+	TCA0_SPLIT_HPER = ((F_CPU / 64) / freq) - 1;
+	//TCA0_SPLIT_HPER = 16;
 	
 	//clk div/64 | enable
-	TCA0_SPLIT_CTRLA = TCA_SPLIT_ENABLE_bm | TCA_SPLIT_CLKSEL_DIV64_gc;	
+	TCA0_SPLIT_CTRLA = TCA_SPLIT_ENABLE_bm | TCA_SPLIT_CLKSEL_DIV64_gc;
 	
+	TCA0_SPLIT_HCMP1 = (((F_CPU / 64) / freq) - 1) / 2;
+	//TCA0_SPLIT_HCMP1 = 8;
+	
+	//TCA0_SPLIT_CTRLB = TCA_SPLIT_HCMP1EN_bm;
 }
 
 
@@ -310,8 +321,19 @@ int main(void) {
 	
 	sei();
 	
-    while (1) {	
-		_delay_ms(10);
-		sleep_cpu();
+    while (1) {
+		if (shouldMeasure) {
+			shouldMeasure = 0;
+			
+			measureCells();
+			checkVoltageLimit();
+		}
+		
+		_delay_ms(100);
+		
+		if (!isVoltageLow) {
+			sleep_enable();
+			sleep_cpu();
+		}
     }
 }

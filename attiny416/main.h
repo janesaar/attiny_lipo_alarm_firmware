@@ -1,6 +1,9 @@
 #ifndef MAIN_H_
 #define MAIN_H_
 
+volatile uint8_t shouldMeasure = 0;
+volatile uint8_t isVoltageLow = 0;
+
 uint16_t buzzerCntr = 0;
 
 uint8_t transferedBytesRxD = 0;
@@ -20,6 +23,8 @@ void addToString(char *dest, char *src, uint8_t destIndex, uint8_t size);
 uint16_t measureCell(ADC_MUXPOS_t pin);
 void measureCells();
 void checkVoltageLimit();
+void enableAlarm();
+void disableAlarm();
 void writeVoltageToEEPROM();
 void readVoltageFromEEPROM();
 
